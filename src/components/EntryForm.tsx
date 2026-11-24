@@ -1,8 +1,16 @@
-import { FormEvent, useEffect, useState } from 'react';
-import { Mic, MicOff, Clock, X, RotateCcw } from 'lucide-react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
+import { Mic, MicOff, Clock, X, RotateCcw, BookUser, Users, Phone, History } from 'lucide-react';
 import { MandiEntry, MandiEntryInput, VoiceFieldKey } from '../types/diary';
 import { useHindiVoice } from '../hooks/useHindiVoice';
+import {
+  CONTACT_UNSUPPORTED_MESSAGE,
+  useContactPicker,
+} from '../hooks/useContactPicker';
 import { getDefaultDateTimeLocal } from '../utils/formatters';
+import { SavedKisan, kisanDirectoryStorage } from '../services/kisanDirectoryStorage';
+import { RecentKisan } from '../services/recentKisanStorage';
+import { SavedKisanModal } from './SavedKisanModal';
+import { RecentKisanModal } from './RecentKisanModal';
 
 interface EntryFormProps {
   editingEntry: MandiEntry | null;
@@ -111,6 +119,9 @@ export function EntryForm({ editingEntry, onSave, onCancelEdit }: EntryFormProps
     departureDateTime: getDefaultDateTimeLocal(),
   }));
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [isKisanModalOpen, setIsKisanModalOpen] = useState<boolean>(false);
+  const [isRecentKisanOpen, setIsRecentKisanOpen] = useState<boolean>(false);
+  const hasPromptedContactOnTapRef = useRef<boolean>(false);
 
   const {
     isSupported,
@@ -121,6 +132,15 @@ export function EntryForm({ editingEntry, onSave, onCancelEdit }: EntryFormProps
     stopListening,
     clearError,
   } = useHindiVoice();
+
+  const {
+    isContactPickerSupported,
+    isPickingContact,
+    contactNotice,
+    contactStatusType,
+    pickContact,
+    clearContactNotice,
+  } = useContactPicker();
 
   useEffect(() => {
     if (editingEntry) {
@@ -134,15 +154,19 @@ export function EntryForm({ editingEntry, onSave, onCancelEdit }: EntryFormProps
         driverPhone: editingEntry.driverPhone,
         departureDateTime: editingEntry.departureDateTime || getDefaultDateTimeLocal(),
       });
+      hasPromptedContactOnTapRef.current = true;
       setValidationError(null);
       clearError();
+      clearContactNotice();
     } else {
       setFormData({
         ...EMPTY_FORM,
         departureDateTime: getDefaultDateTimeLocal(),
       });
+      hasPromptedContactOnTapRef.current = false;
+      clearContactNotice();
     }
-  }, [editingEntry, clearError]);
+  }, [editingEntry, clearError, clearContactNotice]);
 
   const handleFieldChange = (key: keyof MandiEntryInput, value: string) => {
     if (validationError && key === 'farmerName' && value.trim()) {
@@ -154,7 +178,62 @@ export function EntryForm({ editingEntry, onSave, onCancelEdit }: EntryFormProps
     }));
   };
 
+  const handleOpenContactPicker = async () => {
+    const picked = await pickContact();
+    if (!picked) return;
+
+    setFormData((prev) => ({
+      ...prev,
+      farmerName: picked.name || prev.farmerName,
+      farmerPhone: picked.tel || prev.farmerPhone,
+    }));
+
+    if (picked.name) {
+      setValidationError(null);
+    }
+  };
+
+  const handleFarmerNameTap = () => {
+    if (
+      !hasPromptedContactOnTapRef.current &&
+      !formData.farmerName.trim() &&
+      !editingEntry
+    ) {
+      hasPromptedContactOnTapRef.current = true;
+      void handleOpenContactPicker();
+    }
+  };
+
+  const handleSelectSavedKisan = (kisan: SavedKisan) => {
+    hasPromptedContactOnTapRef.current = true;
+    setFormData((prev) => ({
+      ...prev,
+      farmerName: kisan.name || prev.farmerName,
+      farmerPhone: kisan.phone || prev.farmerPhone,
+      village: prev.village.trim() ? prev.village : kisan.village || prev.village,
+    }));
+    if (kisan.name) {
+      setValidationError(null);
+    }
+  };
+
+  const handleSelectRecentKisan = (kisan: RecentKisan) => {
+    hasPromptedContactOnTapRef.current = true;
+    setFormData((prev) => ({
+      ...prev,
+      farmerName: kisan.farmerName,
+      farmerPhone: kisan.farmerPhone,
+      village: kisan.village,
+    }));
+    if (kisan.farmerName) {
+      setValidationError(null);
+    }
+  };
+
   const handleMicClick = (field: VoiceFieldKey) => {
+    if (field === 'farmerName') {
+      hasPromptedContactOnTapRef.current = true;
+    }
     startListening(field, (recognizedText) => {
       setFormData((prev) => ({
         ...prev,
@@ -169,6 +248,8 @@ export function EntryForm({ editingEntry, onSave, onCancelEdit }: EntryFormProps
   const handleResetForm = () => {
     stopListening();
     clearError();
+    clearContactNotice();
+    hasPromptedContactOnTapRef.current = false;
     setValidationError(null);
     setFormData({
       ...EMPTY_FORM,
@@ -196,9 +277,17 @@ export function EntryForm({ editingEntry, onSave, onCancelEdit }: EntryFormProps
       departureDateTime: formData.departureDateTime,
     };
 
+    kisanDirectoryStorage.upsert({
+      name: cleaned.farmerName,
+      phone: cleaned.farmerPhone,
+      village: cleaned.village,
+    });
+
     onSave(cleaned, editingEntry?.id);
 
     if (!editingEntry) {
+      hasPromptedContactOnTapRef.current = false;
+      clearContactNotice();
       setFormData({
         ...EMPTY_FORM,
         departureDateTime: getDefaultDateTimeLocal(),
@@ -307,6 +396,39 @@ export function EntryForm({ editingEntry, onSave, onCancelEdit }: EntryFormProps
           </div>
         )}
 
+        {/* Contact Picker Notice / Unsupported Message */}
+        {contactNotice && (
+          <div
+            role="status"
+            aria-live="polite"
+            className={`mb-5 flex items-start justify-between gap-3 rounded-2xl border px-4 py-3 text-sm font-medium ${
+              contactStatusType === 'info'
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-950'
+                : 'border-amber-300 bg-amber-50 text-amber-950'
+            }`}
+          >
+            <div>
+              <p>
+                {contactStatusType === 'info' ? '✅ ' : 'ℹ️ '}
+                {contactNotice}
+              </p>
+              {contactNotice === CONTACT_UNSUPPORTED_MESSAGE && (
+                <p className="mt-1 text-xs text-amber-900">
+                  इस ब्राउज़र में कॉन्टैक्ट चुनने की सुविधा नहीं है। कृपया किसान का नाम और फोन नंबर हाथ से लिखें या माइक से बोलें।
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={clearContactNotice}
+              aria-label="संदेश बंद करें"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg hover:bg-black/5"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
+        )}
+
         {/* Validation Error */}
         {validationError && (
           <div
@@ -321,25 +443,68 @@ export function EntryForm({ editingEntry, onSave, onCancelEdit }: EntryFormProps
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-5">
             {TEXT_FIELDS.map((field) => {
               const isListeningThis = listeningField === field.key;
+              const isFarmerName = field.key === 'farmerName';
               return (
                 <div
                   key={field.key}
                   className={`rounded-2xl border p-3.5 transition-colors sm:p-4 ${field.tintClass}`}
                 >
-                  <label
-                    htmlFor={`field-${field.key}`}
-                    className="mb-2 flex items-center gap-2 text-base font-bold text-slate-900"
-                  >
-                    <span className="text-lg" aria-hidden="true">
-                      {field.emoji}
-                    </span>
-                    <span>
-                      {field.order}. {field.label}
-                    </span>
-                    {field.key === 'farmerName' && (
-                      <span className="text-sm font-semibold text-rose-600">*</span>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <label
+                      htmlFor={`field-${field.key}`}
+                      className="flex items-center gap-2 text-base font-bold text-slate-900"
+                    >
+                      <span className="text-lg" aria-hidden="true">
+                        {field.emoji}
+                      </span>
+                      <span>
+                        {field.order}. {field.label}
+                      </span>
+                      {isFarmerName && (
+                        <span className="text-sm font-semibold text-rose-600">*</span>
+                      )}
+                    </label>
+
+                    {isFarmerName && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setIsRecentKisanOpen(true)}
+                          title="हाल ही में उपयोग किए गए किसान चुनें"
+                          className="inline-flex min-h-[34px] items-center gap-1.5 rounded-lg border border-emerald-300 bg-white px-2.5 py-1 text-xs font-semibold text-emerald-900 transition-colors hover:bg-emerald-100 whitespace-nowrap"
+                        >
+                          <History className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Recent Kisan</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsKisanModalOpen(true)}
+                          title="सहेजे गए किसान की सूची खोलें"
+                          className="inline-flex min-h-[34px] items-center gap-1.5 rounded-lg border border-emerald-300 bg-white px-2.5 py-1 text-xs font-semibold text-emerald-900 transition-colors hover:bg-emerald-100 whitespace-nowrap"
+                        >
+                          <Users className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>सहेजे किसान</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            hasPromptedContactOnTapRef.current = true;
+                            void handleOpenContactPicker();
+                          }}
+                          disabled={isPickingContact}
+                          title={
+                            isContactPickerSupported
+                              ? 'फोन की कॉन्टैक्ट लिस्ट से चुनें'
+                              : 'संपर्क चुनें'
+                          }
+                          className="inline-flex min-h-[34px] items-center gap-1.5 rounded-lg border border-emerald-300 bg-white px-2.5 py-1 text-xs font-semibold text-emerald-900 transition-colors hover:bg-emerald-100 disabled:opacity-60 whitespace-nowrap"
+                        >
+                          <BookUser className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>{isPickingContact ? 'खुल रहा है...' : 'कॉन्टैक्ट चुनें'}</span>
+                        </button>
+                      </div>
                     )}
-                  </label>
+                  </div>
 
                   <div className="flex items-stretch gap-2.5">
                     <input
@@ -348,10 +513,33 @@ export function EntryForm({ editingEntry, onSave, onCancelEdit }: EntryFormProps
                       type={field.inputType}
                       inputMode={field.inputMode}
                       value={formData[field.key]}
+                      onClick={isFarmerName ? handleFarmerNameTap : undefined}
                       onChange={(e) => handleFieldChange(field.key, e.target.value)}
                       placeholder={field.placeholder}
                       className="min-h-[52px] w-full min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-lg font-medium text-slate-900 placeholder:text-slate-400 focus:border-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-200 tabular-nums"
                     />
+
+                    {field.key === 'farmerPhone' &&
+                      (formData.farmerPhone.trim() ? (
+                        <a
+                          href={`tel:${formData.farmerPhone.trim()}`}
+                          aria-label="किसान को कॉल करें"
+                          title="किसान को कॉल करें"
+                          className="flex min-h-[52px] min-w-[54px] shrink-0 items-center justify-center rounded-xl border border-emerald-300 bg-emerald-100 px-3 text-emerald-900 transition-all hover:bg-emerald-200 active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+                        >
+                          <Phone className="h-6 w-6" aria-hidden="true" />
+                        </a>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled
+                          aria-label="कॉल करने के लिए फोन नंबर डालें"
+                          title="कॉल करने के लिए पहले फोन नंबर भरें"
+                          className="flex min-h-[52px] min-w-[54px] shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 px-3 text-slate-400 cursor-not-allowed"
+                        >
+                          <Phone className="h-6 w-6" aria-hidden="true" />
+                        </button>
+                      ))}
 
                     <button
                       type="button"
@@ -432,6 +620,20 @@ export function EntryForm({ editingEntry, onSave, onCancelEdit }: EntryFormProps
           </div>
         </form>
       </div>
+      {isKisanModalOpen && (
+        <SavedKisanModal
+          isOpen={isKisanModalOpen}
+          onClose={() => setIsKisanModalOpen(false)}
+          onSelectKisan={handleSelectSavedKisan}
+        />
+      )}
+      {isRecentKisanOpen && (
+        <RecentKisanModal
+          isOpen={isRecentKisanOpen}
+          onClose={() => setIsRecentKisanOpen(false)}
+          onSelectKisan={handleSelectRecentKisan}
+        />
+      )}
     </section>
   );
 }

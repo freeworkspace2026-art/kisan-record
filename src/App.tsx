@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { BookOpen, PenSquare, CheckCircle2, X } from 'lucide-react';
 import { AppSection, MandiEntry, MandiEntryInput } from './types/diary';
 import { localDiaryRepository } from './services/diaryStorage';
+import { recentKisanStorage } from './services/recentKisanStorage';
 import { EntryForm } from './components/EntryForm';
 import { DiaryList } from './components/DiaryList';
 import { ConfirmDeleteModal } from './components/ConfirmDeleteModal';
@@ -17,6 +18,11 @@ export default function App() {
     if (editingId) {
       const updated = localDiaryRepository.update(editingId, data);
       if (updated) {
+        recentKisanStorage.record({
+          farmerName: data.farmerName,
+          village: data.village,
+          farmerPhone: data.farmerPhone,
+        });
         setEntries(localDiaryRepository.getAll());
         setEditingEntry(null);
         setActiveSection('my-diary');
@@ -26,6 +32,11 @@ export default function App() {
     }
 
     localDiaryRepository.create(data);
+    recentKisanStorage.record({
+      farmerName: data.farmerName,
+      village: data.village,
+      farmerPhone: data.farmerPhone,
+    });
     setEntries(localDiaryRepository.getAll());
     setSuccessMessage('नई एंट्री मेरी डायरी में सेव हो गई!');
   };
